@@ -1,8 +1,8 @@
 import os
+import sys
 import tempfile
 
 from PIL import Image, ImageFile
-from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
@@ -10,15 +10,12 @@ from reportlab.pdfgen import canvas
 # SETTINGS
 # ======================================
 
-INPUT_PNG = "input.png"
-OUTPUT_PDF = "output.pdf"
-
 BAR_COLOR = (0x21, 0x24, 0x29)
 
 TOLERANCE = 8
 MIN_BAR_HEIGHT = 5
 
-PDF_DPI = 300  # High quality
+TARGET_DPI = 300  # Change to 600 for ultra-high quality
 
 # ======================================
 # ALLOW HUGE IMAGES
@@ -100,43 +97,44 @@ def find_regions(img):
 # ======================================
 
 
-def save_pdf(images):
+def save_pdf(images, output_pdf):
+    # Calculate initial page size based on first image dimensions at TARGET_DPI
+    # ReportLab uses points (72 points = 1 inch)
+    first_img_w, first_img_h = images[0].size
+    initial_page_w = (first_img_w / TARGET_DPI) * 72
+    initial_page_h = (first_img_h / TARGET_DPI) * 72
 
-    page_width, page_height = A4
-
-    c = canvas.Canvas(OUTPUT_PDF, pagesize=A4)
+    c = canvas.Canvas(output_pdf, pagesize=(initial_page_w, initial_page_h))
 
     for index, img in enumerate(images):
-        print(f"Adding page {index + 1}")
+        print(f"Adding page {index + 1} at {TARGET_DPI} DPI...")
 
         img_width, img_height = img.size
 
-        scale = min(page_width / img_width, page_height / img_height)
+        # Convert pixel size to ReportLab points using TARGET_DPI
+        pdf_width = (img_width / TARGET_DPI) * 72
+        pdf_height = (img_height / TARGET_DPI) * 72
 
-        draw_width = img_width * scale
-        draw_height = img_height * scale
-
-        x = (page_width - draw_width) / 2
-        y = (page_height - draw_height) / 2
+        c.setPageSize((pdf_width, pdf_height))
 
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             temp_name = tmp.name
 
-            # Save lossless PNG
-            img.save(temp_name, format="PNG", compress_level=0)
+            # Save uncompressed high-resolution PNG slice
+            img.save(temp_name, format="PNG", compress_level=0, dpi=(TARGET_DPI, TARGET_DPI))
 
+        # Render 1:1 image pixels on high-DPI PDF page canvas
         c.drawImage(
             ImageReader(temp_name),
-            x,
-            y,
-            width=draw_width,
-            height=draw_height,
+            0,
+            0,
+            width=pdf_width,
+            height=pdf_height,
             preserveAspectRatio=True,
             mask="auto",
         )
 
         os.remove(temp_name)
-
         c.showPage()
 
     c.save()
@@ -148,32 +146,48 @@ def save_pdf(images):
 
 
 def main():
+    input_files = sys.argv[1:]
 
-    print("Opening image...")
+    if not input_files:
+        print("Error: No input files provided by Dropover.")
+        sys.exit(1)
 
-    img = Image.open(INPUT_PNG).convert("RGB")
+    for input_file in input_files:
+        if not os.path.isfile(input_file):
+            print(f"Skipping invalid path: {input_file}")
+            continue
 
-    print(f"Image size: {img.size}")
+        print(f"\nProcessing file: {input_file}")
 
-    regions = find_regions(img)
+        try:
+            img = Image.open(input_file).convert("RGB")
+        except Exception as e:
+            print(f"Failed to open image {input_file}: {e}")
+            continue
 
-    print(f"Found {len(regions)} sections")
+        print(f"Image size: {img.size}")
 
-    cropped_images = []
+        regions = find_regions(img)
 
-    for i, (top, bottom) in enumerate(regions):
-        print(f"Cropping section {i + 1}")
+        print(f"Found {len(regions)} sections")
 
-        cropped = img.crop((0, top, img.width, bottom))
+        cropped_images = []
 
-        cropped_images.append(cropped)
+        for i, (top, bottom) in enumerate(regions):
+            print(f"Cropping section {i + 1}")
 
-    print("Creating high-quality PDF...")
+            cropped = img.crop((0, top, img.width, bottom))
+            cropped_images.append(cropped)
 
-    save_pdf(cropped_images)
+        base, _ = os.path.splitext(input_file)
+        output_pdf = f"{base}_textbookpdf.pdf"
 
-    print("DONE")
-    print(f"Saved as: {OUTPUT_PDF}")
+        print(f"Creating PDF at {TARGET_DPI} DPI: {output_pdf}")
+
+        save_pdf(cropped_images, output_pdf)
+
+        print("DONE")
+        print(f"Saved as: {output_pdf}")
 
 
 if __name__ == "__main__":
